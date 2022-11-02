@@ -1,0 +1,95 @@
+var $ = jQuery;
+$(document).ready(function() {
+
+    /**********************/
+    /* SPANISH POP UP     */
+    /**********************/
+
+    //Open the Spanish pop up if the browser language is set to "es" and the cookie does not exist
+    var language = window.navigator.userLanguage || window.navigator.language;
+    if (getCookie("pum_occ_es").length==0 && language.indexOf("es") >= 0) {
+        PUM.open(104261);
+    }
+
+    
+    /**********************/
+    /* GEO IP POP UP      */
+    /**********************/
+
+
+    //test to make sure browser localStorage is enabled.
+    if(localStorage == undefined && localStorage == null) {
+      return false; //bail
+    }
+
+
+    //check for testing url parms
+    var del = getUrlVars()["deleteLocalStorage"];
+    if(del == "true"){
+        localStorage.removeItem('countryCodeCheckedOCC');
+        localStorage.removeItem('countryCodeOCC');
+    }
+    var countrySpoof = getUrlVars()["countrySpoof"];
+    var countryCodeOCC = localStorage.getItem('countryCodeOCC');    
+    var countryCodeCheckedOCC = localStorage.getItem('countryCodeCheckedOCC');    
+    
+    //check to see if 30 days have passed since the last check
+    if(countryCodeCheckedOCC != null) {
+      var elapsedTime = Date.now() - countryCodeCheckedOCC;
+      if(elapsedTime<2592000000) {
+          //not enough time has passed since the last check
+          return false;
+      }
+    }
+    
+    //define result actions for geo call
+    var onSuccess = function(location){
+           countryCodeOCC=location.country.iso_code;
+           countryCheck();
+    };
+
+    var onError = function(error){
+        return false;
+       //JSON.stringify(error, undefined, 4)
+    };
+
+
+    //for testing purposes only - remove
+    if (countrySpoof) {
+        countryCodeOCC=countrySpoof;
+        localStorage.setItem("countryCodeOCC",countryCodeOCC);
+        countryCheck();        
+    } else {
+        //if user is from US, bail
+        if (countryCodeOCC==="US") {
+            return false;
+        }
+        geoip2.country(onSuccess, onError);
+    }
+
+    function countryCheck() {
+        localStorage.setItem("countryCodeOCC",countryCodeOCC);
+        localStorage.setItem("countryCodeCheckedOCC",Date.now());
+        
+        if(countryCodeOCC !== 'US'){            
+            //show dialog
+            //launchDialog();
+            PUM.open(104266);
+        }
+    }
+    
+    // Read a page's GET URL variables and return them as an associative array.
+    function getUrlVars()
+    {
+        var vars = [], hash;
+        var hashes = window.location.href.slice(window.location.href.indexOf('?') + 1).split('&');
+        for(var i = 0; i < hashes.length; i++)
+        {
+            hash = hashes[i].split('=');
+            vars.push(hash[0]);
+            vars[hash[0]] = hash[1];
+        }
+        return vars;
+    }
+   
+});

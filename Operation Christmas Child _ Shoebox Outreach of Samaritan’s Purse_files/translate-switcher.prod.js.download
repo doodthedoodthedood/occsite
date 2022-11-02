@@ -1,0 +1,282 @@
+function SPT_Determine_Language(){
+  var _this = this;
+  var sptCookie = null;
+  var sptHelper = null;
+
+  this.get_current_dom_language = function(){
+      var html_language = jQuery('html').attr('lang');
+      if(html_language === undefined || html_language === null) {
+          html_language = sptHelper.defaultLanguage;
+      } else {
+          html_language = html_language.split("-").join("_");
+      }
+      return html_language;
+  };
+
+  this.get_language_from_browser = function() {
+      var browserLang = navigator.language || navigator.userLanguage;
+      if(browserLang === undefined || browserLang === null) {
+          browserLang = sptHelper.defaultLanguage;
+      } else {
+          browserLang = browserLang.split("-").join("_");
+      }
+      return browserLang;
+  }
+  
+  this.get_lang_from_url = function ( url ) {
+      // we remove http or https
+      // if the user links to a http link but the abs_home_url is https, we're serving the https one so we don't brake cookies if he doesn't have proper redirects
+      var lang = url.replace( /^(http|https):\/\//g, '');
+      var abs_home = sptHelper.absHome.replace( /^(http|https):\/\//g, '');
+
+      // we have removed the home path from our URL. We're adding a / in case it's the homepage of one of the languages
+      // removing / from the front so it's easier for understanding explode()
+      lang = sptHelper.ltrim( sptHelper.trailingslashit( lang.replace(abs_home, '') ),'/' );
+
+      // We now have to see if the first part of the string is actually a language slug
+      var lang_array = lang.split("/");
+      if( lang_array.length < 2 ){
+          return sptHelper.defaultLanguage;
+      }
+      // The language code is the first non-empty item in this array depending on abs_home slashes
+      for ( var i = 0; i < lang_array.length; i++ ){
+          if ( lang_array[i] != undefined && lang_array[i] != '' ) {
+              lang = lang_array[i];
+              break;
+          }
+      }
+      // the lang slug != actual lang. So we need to do array_search so we don't end up with en instead of en_US
+      if( sptHelper.in_array( lang, sptHelper.urlSlugs ) ){
+          return sptHelper.array_search( lang, sptHelper.urlSlugs );
+      } else {
+          return sptHelper.defaultLanguage;
+      }
+
+  };
+
+  this.is_valid_url = function ( url ) {
+      if ( typeof url === 'undefined' || url === '' ){
+          return false;
+      }
+      var starting_characters = ['#','?'];
+      for (var i = 0; i < starting_characters.length; i++ ){
+          if ( url.substring( 0, 1 ) === starting_characters[i] ){
+              return false;
+          }
+      }
+      return true;
+  };
+
+  this.add_event_handlers = function(){
+      jQuery('body').on('click', 'a', function(e) {
+
+          var clicked_url = jQuery(this).attr("href");
+          if ( _this.is_valid_url( clicked_url ) ) {
+              var clicked_language = _this.get_lang_from_url(clicked_url);
+              var spt_current_language = sptCookie.getCookie(sptHelper.cookieName);
+
+              if (spt_current_language != clicked_language) {
+                  sptCookie.setCookie(sptHelper.cookieName, clicked_language);
+              }
+          }
+      });
+  };
+
+  this.redirect_if_needed = function( needed_language ){
+      sptCookie.setCookie( sptHelper.cookieName, needed_language );
+      _this.add_event_handlers();
+
+       if ( _this.get_current_dom_language() != needed_language ){
+          url_to_redirect = _this.get_url_for_lang( needed_language );
+          // redirect to needed language
+          window.location.replace( url_to_redirect );
+      }
+  };
+
+  this.initialize = function (){
+    sptCookie = new SPT_Cookie();
+    sptHelper = new SPT_Helper();
+    sptSwitcher = new SPT_Switcher();
+    if ( ! sptCookie.areCookiesEnabled() ){
+        _this.add_event_handlers();
+        return;
+    }
+    var language_from_url = _this.get_lang_from_url(window.location.href);
+    var language_from_cookie = sptCookie.getCookie( sptHelper.cookieName );
+    var language_from_browser = _this.get_language_from_browser();
+    
+    // Allow URL to drive language, which means the following code will never execute
+  /*  
+  if ( language_from_cookie && sptHelper.in_array( language_from_cookie, sptHelper.languages ) ) {
+      // if cookie is set, redirect if needed
+      _this.redirect_if_needed( language_from_cookie );
+  } else if(language_from_browser && sptHelper.in_array( language_from_browser, sptHelper.languages )) {
+      _this.redirect_if_needed( language_from_browser );
+  } else{
+      // if cookie is not set, send request to find out language and then redirect if needed
+      _this.redirect_if_needed( sptHelper.defaultLanguage );
+  } */
+};
+
+  this.get_url_for_lang = function( language ){
+      return jQuery( 'link[hreflang=' + language.split("_").join("-") + ']').first().attr('href');
+  };
+
+  _this.initialize();
+}
+
+function SPT_Switcher() {
+  var cartBanner = document.getElementById("gblCart");
+  var languageSwitcher = document.getElementById("trp-floater-ls");
+  var adminBar = document.getElementById("wpadminbar");
+
+  if (languageSwitcher && cartBanner) {
+    var scrollAmount = languageSwitcher.offsetHeight;
+    var fixedPosition = 0;
+    if (adminBar) {
+      scrollAmount += adminBar.offsetHeight;
+      if (window.innerWidth > 600) {
+        fixedPosition = adminBar.offsetHeight;
+      }
+    }
+    if (window.scrollY > scrollAmount-fixedPosition) {
+      cartBanner.style.top = fixedPosition.toString()+"px";
+    }
+    document.addEventListener("scroll", function(e) {
+      if (window.scrollY < scrollAmount-fixedPosition && window.scrollY >= 0) {
+        cartBanner.style.top = (scrollAmount-window.scrollY).toString()+"px";
+      } else if (window.scrollY < 0) {
+        cartBanner.style.top = (scrollAmount).toString()+"px";
+      } else {
+        cartBanner.style.top = fixedPosition.toString()+"px";
+      }
+    });
+  } else if (languageSwitcher && window.location.pathname.includes('gift-catalog')) {
+      // Hide language switcher on gift catalog
+      languageSwitcher.style.display = 'none';
+  }
+};
+
+function SPT_Helper() {
+
+  this.cookieName = 'spt_language';
+  this.languages = ['en_US','es_ES'];
+  this.defaultLanguage = window.location.href.includes(".org/es/") ? 'en_ES' : 'en_US';
+  this.absHome = location.host;
+  this.cookieDomain = 'samaritanspurse.org';
+  this.urlSlugs = { 'en_US': 'en', 'es_ES': 'es' };
+
+  this.trailingslashit = function ( string ){
+      string = string.replace(/\/+$/,'');
+      string = string + '/';
+      return string;
+  };
+
+  this.ltrim = function ( string ) {
+      var trimmed = string.replace(/^\s+/g, '');
+      return trimmed;
+  };
+
+  this.in_array = function (needle, haystack) {
+      for(var i in haystack ) {
+          if(haystack[i] == needle) {
+              return true;
+          }
+      }
+      return false;
+  };
+
+  this.array_search = function(val, array) {
+      if(typeof(array) === 'array' || typeof(array) === 'object') {
+          var rekey;
+          for(var i in array) {
+              if(array[i] == val) {
+                  rekey = i;
+                  break;
+              }
+          }
+          return rekey;
+      }
+  };
+
+  /**
+   * Update url with query string.
+   *
+   */
+  this.update_query_string = function(key, value, url) {
+      if (!url) url = window.location.href;
+      var re = new RegExp("([?&])" + key + "=.*?(&|#|$)(.*)", "gi"),
+          hash;
+
+      if (re.test(url)) {
+          if (typeof value !== 'undefined' && value !== null)
+              return url.replace(re, '$1' + key + "=" + value + '$2$3');
+          else {
+              hash = url.split('#');
+              url = hash[0].replace(re, '$1$3').replace(/(&|\?)$/, '');
+              if (typeof hash[1] !== 'undefined' && hash[1] !== null)
+                  url += '#' + hash[1];
+              return url;
+          }
+      }
+      else {
+          if (typeof value !== 'undefined' && value !== null ) {
+              var separator = url.indexOf('?') !== -1 ? '&' : '?';
+              hash = url.split('#');
+              url = hash[0] + separator + key + '=' + value;
+              if (typeof hash[1] !== 'undefined' && hash[1] !== null)
+                  url += '#' + hash[1];
+              return url;
+          }
+          else
+              return url;
+      }
+  };
+}
+
+
+function SPT_Cookie() {
+  sptHelper = new SPT_Helper();
+  this.setCookie = function(cname, cvalue, exdays = 30, cpath = '/', cdomain = sptHelper.cookieDomain) {
+      var d = new Date();
+      d.setTime(d.getTime() + (exdays * 24 * 60 * 60 * 1000));
+      var expires = "expires="+d.toUTCString();
+      document.cookie = cname + "=" + cvalue + ";" + expires + ";path=" + cpath + ";domain=" + cdomain + ";SameSite=Lax;";
+  }
+
+  this.getCookie = function(cname) {
+      var name = cname + "=";
+      var ca = document.cookie.split(';');
+      for(var i = 0; i < ca.length; i++) {
+          var c = ca[i];
+          while (c.charAt(0) == ' ') {
+              c = c.substring(1);
+          }
+          if (c.indexOf(name) == 0) {
+              return c.substring(name.length, c.length);
+          }
+      }
+      return "";
+  };
+
+  this.eraseCookie = function(name) {
+      document.cookie = name+'=; Max-Age=-99999999;';
+  };
+
+  this.areCookiesEnabled = function(){
+      if (navigator.cookieEnabled) return true;
+
+      // set and read cookie
+      document.cookie = "cookietest=1";
+      var ret = document.cookie.indexOf("cookietest=") != -1;
+
+      // delete cookie
+      document.cookie = "cookietest=1; expires=Thu, 01-Jan-1970 00:00:01 GMT";
+
+      return ret;
+  }
+}
+
+jQuery( function() {
+  sptDetermineLanguage = new SPT_Determine_Language();
+});

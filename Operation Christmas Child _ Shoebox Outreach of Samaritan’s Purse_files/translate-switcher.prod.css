@@ -1,0 +1,67 @@
+/*
+Required TranslatePress Language Switcher Settings: 
+- Floating language selection
+    - Full Language Names
+    - Dark
+    - Top Right
+*/
+
+#site-wrapper {
+    margin-top: 40px !important;
+}
+
+#trp-floater-ls {
+    position: absolute !important;
+    width: 100% !important;
+    height: 40px !important;
+    left: 0 !important;
+    background: #373737 !important;
+    box-shadow: none !important;
+    border-radius: 0px !important;
+}
+
+/* Temporary fix for https://www.samaritanspurse.org/operation-christmas-child-countries/hard-to-reach-areas */
+.sp-occ-countries-template-default #trp-floater-ls {
+    position: fixed !important;
+}
+
+#trp-floater-ls a {
+    -webkit-touch-callout: none; -webkit-user-select: none; -khtml-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none;
+}
+
+#trp-floater-ls-current-language {
+    display: none !important;
+}
+
+#trp-floater-ls-language-list {
+    display: block !important;
+    max-width: 1154px;
+    margin: auto;
+}
+
+#trp-floater-ls-language-list .trp-language-wrap {
+    display: flex !important;
+}
+
+#trp-floater-ls-language-list a {
+    font-size: 12px !important;
+    padding: 9px 15px !important;
+    color: white !important;
+}
+
+#trp-floater-ls-language-list a::before {
+    content: "◉ ";
+    font-size: 11px;
+    line-height: 12px;
+    opacity: 0.25;
+    transition: opacity 100ms ease-in-out;
+}
+
+#trp-floater-ls-language-list a:hover {
+    background: none !important;
+}
+
+#trp-floater-ls-language-list .trp-floater-ls-disabled-language::before,
+#trp-floater-ls-language-list a:hover::before {
+    opacity: 1 !important;
+}

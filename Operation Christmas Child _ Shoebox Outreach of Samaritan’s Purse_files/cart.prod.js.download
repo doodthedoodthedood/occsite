@@ -1,0 +1,1746 @@
+// // // SP Checkout
+// requires jQuery, and cookie functions
+// Originally written by HL / Edited by JC
+
+/**
+ * @typedef {Object} Cart
+ * @property {Cart~data} data - info on cart
+ */
+
+/**
+ * @typedef {Object} Cart~data
+ * @property {string} Id - GUID of the cart
+ * @property {string} Referrer 
+ * @property {string} SourceCode - Where did you come from?
+ * @property {Array} EntityAttributes - details about the cart
+ * @property {CartItem[]} Items - Entries in the Cart
+ */
+
+
+
+/**
+ * @typedef {Object} CartItem
+ * @property {string} Description
+ * @property {string} Designation
+ * @property {number} Quantity
+ * @property {number|string} Amount
+ * @property {number} ItemValue
+ * @property {string} "toy-list-added" 
+ * @property {boolean} PromoCodeAllowed
+ * @property {boolean} isBASBO
+ * @property {boolean} IsBasboPrePaid
+ * @property {boolean} isAmountEditable
+ * @property {boolean} IsFreeNonShippable
+ * @property {Array} EntityAttributes
+ * @property {boolean?} AuthorizeOnly
+
+ */
+
+
+// Cart functions
+// .addItem
+// .updateItem
+// .removeItem
+// .load
+// .update
+// .save
+// .submit
+// .empty
+// .setCookie
+// .getCookie
+// .savePromise
+// .findItemsByDesignation
+
+
+if (!window['sp_location_utils']) {
+  window['sp_location_utils'] = (function() {
+
+    /**
+     * parses out the domain form a host string
+     * IE 
+     *  www.google.com -> google.com
+     *  www.samaritanspurse.org -> samaritanspurse.org
+     *  localhost -> localhost
+     * @param {String} hostname 
+     * returns main domain
+     */
+    function getDomain(hostname) {
+      var hostBreak = hostname.split('.');
+      if (hostBreak.length < 3) {
+        return hostBreak.join('.');
+      }  
+      return hostBreak.splice(hostBreak.length - 2).join('.')
+    }
+
+    return {
+      getDomain: getDomain
+    };
+  })();
+}
+
+navigator.browserInfo= (function(){
+  var ua= navigator.userAgent, tem,
+      M= ua.match(/(opera|chrome|safari|firefox|msie|trident(?=\/))\/?\s*(\d+)/i) || [];
+  if(/trident/i.test(M[1])){
+    tem=  /\brv[ :]+(\d+)/g.exec(ua) || [];
+    return 'IE '+(tem[1] || '');
+  }
+  if(M[1]=== 'Chrome'){
+    tem= ua.match(/\b(OPR|Edge)\/(\d+)/);
+    if(tem!= null) return tem.slice(1).join(' ').replace('OPR', 'Opera');
+  }
+  M= M[2]? [M[1], M[2]]: [navigator.appName, navigator.appVersion, '-?'];
+  if((tem= ua.match(/version\/(\d+)/i))!= null) M.splice(1, 1, tem[1]);
+  return { 'browser': M[0], 'version': M[1] };
+})();
+
+
+//.includes polyfill for IE
+if (!String.prototype.includes) {
+  String.prototype.includes = function(search, start) {
+    'use strict';
+    if (typeof start !== 'number') {
+      start = 0;
+    }
+
+    if (start + search.length > this.length) {
+      return false;
+    } else {
+      return this.indexOf(search, start) !== -1;
+    }
+  };
+}
+
+/**
+ * We have a few requirements for browsers
+ * - ie11 or a modern browser
+ * - cookies must be enabled
+ *
+ * @returns {boolean}
+ */
+function browserCheck() {
+  var browserValid = false;
+
+  if (versionCheck() && cookieCheck()) {
+    browserValid = true;
+  }
+
+  return browserValid;
+}
+
+/**
+ * Where do we draw the line on old browser support?
+ *
+ * @returns {boolean}
+ */
+function versionCheck() {
+  var versionValid = false;
+
+  //check for older browsers
+  if (
+      (navigator.browserInfo.browser == "MSIE" && navigator.browserInfo.version < 11) ||
+      (navigator.browserInfo.browser == "Safari" && navigator.browserInfo.version < 11)
+  ) {
+    var dataLayer = (window.dataLayer = window.dataLayer || []);
+    dataLayer.push({event: 'ecomAddFail'});
+    alert("You are using an older browser that is incompatible with our online donation system. Please contact Donor Ministries at 828-262-1980 for assistance.");
+  } else {
+    versionValid = true;
+  }
+
+  return versionValid;
+}
+
+/**
+ * Can we set and retrieve a cookie?
+ *
+ * @returns {boolean}
+ */
+function cookieCheck() {
+  var cookiesAllowed = false;
+  setCookie('cartTest', '1', cookieExpirationDays);
+  var test = getCookie('cartTest');
+
+  if (test === '1') {
+    cookiesAllowed = true;
+  } else {
+    alert("You must enable cookies to use this site. Please contact Donor Ministries at 828-262-1980 for assistance.");
+  }
+
+  setCookie('cartTest', '1', cookieUnSetExpirationDays);
+
+  return cookiesAllowed;
+}
+
+function Cart(data, cookieNameSpace) {
+  // ----------- cart initialization ----------
+
+  // reference this for callbacks
+  var cart = this;
+
+  // init data object
+  this.data = {
+    Id: (any = null),
+    Referrer: (any = null),
+    SourceCode: (any = null),
+    EntityAttributes: (any = new Array()),
+    Items: (any = new Array())
+  };
+
+  // this is defined in wordpress functions - sp_enqueue_assets
+  this.checkoutUrl = checkoutUrl;
+  this.jsonStoreUrl = jsonStoreUrl;
+  this.checkoutEnv = checkoutEnv;
+  this.cookieCheckoutEnv = getCookie('_cart-environment');
+  this.loadCart = true;
+
+  if (this.cookieCheckoutEnv === '' || this.cookieCheckoutEnv === 'undefined') {
+    setCookie('_cart-environment', this.checkoutEnv, cookieExpirationDays);
+  }
+
+  if (this.checkoutEnv !== this.cookieCheckoutEnv) {
+    // check if we have a cart id
+    var _cartID = getCookie('_cartid');
+
+    // if we do, get the cart object from cookie environment
+    if (_cartID !== null || _cartID !== undefined || _cartID.length > 0) {
+
+      this.loadCart = false;
+
+      switch(this.cookieCheckoutEnv) {
+        case 'legacy':
+          jQuery.ajax({
+            url: 'https://xcrm.samaritanspurse.org/service.php/sp/Cart/GetCart.json/' + _cartID,
+            type: "GET",
+            dataType: "json",
+            success: function (res) {
+              cart.data = res;
+              setCookie('_cart-environment', cart.checkoutEnv, cookieExpirationDays);
+              cart.update(cart.data);
+              cart.copyToNewEnvironment(cart.jsonStoreUrl + res.Id);
+            },
+            error: function (jq, textStatus, errorThrown) {cartAjaxError(textStatus, errorThrown, callbacks);}
+          });
+          break;
+        case 'modern':
+          jQuery.ajax({
+            url: this.jsonStoreUrl + _cartID,
+            type: 'GET',
+            dataType: 'json',
+            success: function(res) {
+              cart.data = res;
+              setCookie('_cart-environment', cart.checkoutEnv, cookieExpirationDays);
+              cart.update(cart.data);
+              cart.copyToNewEnvironment('https://xcrm.samaritanspurse.org/service.php/sp/Cart/SaveCart.json');
+            },
+            error: function(jq, textStatus, errorThrown) {
+              cartAjaxError(textStatus, errorThrown, callbacks);
+            }
+          });
+          break;
+      }
+    }
+  }
+
+  // merge cart from passed object
+  if (typeof data !== 'undefined') {
+    jQuery.extend(this.data, data);
+  }
+
+  // setup cookie name
+  this.cookieName =
+      (typeof cookieNameSpace !== 'undefined' ? cookieNameSpace : '') + '_cartid';
+
+  // -------- item functions ---------
+
+  // creates a new item in the cart
+  // returns true / false for success / fail
+  this.addItem = function(item){
+    if (!giftCatalog) {
+      this.removeDuplicateItem(item);
+    }
+    this.data.Items.push(item);
+    this.emit('item_added', item);
+    return this;
+  };
+
+  // creates a new item in the cart
+  // returns true / false for success / fail
+  this.removeDuplicateItem = function(item){
+    var indexesToRemove = Array();
+
+    for(var i = 0; i < this.data.Items.length; i++){
+      if((this.data.Items[i].Designation == item.Designation) && item.Designation != '013950' && item.Designation != '014043' && item.Designation != '014052') {
+        indexesToRemove.push(i);
+      }
+    }
+
+    for (var i = indexesToRemove.length -1; i >= 0; i--){
+      this.removeItem(indexesToRemove[i]);
+    }
+
+    return this;
+  };
+
+  // updates an item from the cart
+  // returns true / false for success / fail
+  this.updateItem = function(itemID, item) {
+    jQuery.extend(true, this.data.Items[itemID], item);
+    this.emit('item_updated', itemID);
+    return this;
+  };
+
+  // removes an item from the cart
+  // returns true / false for success / fail
+  this.removeItem = function(itemID) {
+    var rmItm = this.data.Items.splice(itemID, 1);
+    this.emit('item_removed', rmItm);
+    return this;
+  };
+
+  // -------- cart functions ---------
+
+  // updates the cart object with passed data
+  this.update = function(data) {
+    jQuery.extend(true, this.data, data);
+    this.emit('cart_updated', null);
+    return this;
+  };
+
+  var cartAjaxSuccess, cartAjaxError;
+
+  this.load = function(callbacks, cartID){
+    switch(this.checkoutEnv) {
+      case 'legacy':
+        this.loadLegacy(callbacks, cartID);
+        break;
+      case 'modern':
+        this.loadModern(callbacks, cartID);
+        break;
+    }
+  }
+
+  this.save = function (callbacks) {
+    var envToUse = this.triggerHook('pre-save', this.checkoutEnv);
+    switch(envToUse) {
+      case 'legacy':
+        this.saveLegacy(callbacks);
+        break;
+      case 'modern':
+        this.saveModern(callbacks);
+        break;
+    }
+  }
+
+  // load from json store
+  this.loadModern = function(callbacks, cartID) {
+    cartID = typeof cartID !== 'undefined' && cartID !== '' ? cartID : this.getCookie();
+    if (cartID !== '') {
+      jQuery.ajax({
+        url: this.jsonStoreUrl+ cartID,
+        type: 'GET',
+        dataType: 'json',
+        success: function(data) {
+          cart.data = data;
+          cartAjaxSuccess(cart.data, callbacks);
+        },
+        error: function(jq, textStatus, errorThrown) {
+          cartAjaxError(textStatus, errorThrown, callbacks);
+        }
+      });
+    } else {
+      // this is a new cart so save it and get started
+      this.save(callbacks);
+    }
+
+    return this;
+  };
+
+  // save to json store
+  this.saveModern = function(callbacks) {
+    // fixes last item removal bug
+    // if (
+    //     typeof this.data.Items !== 'undefined' &&
+    //     !this.data.Items.length
+    // ) {
+    //   this.data.Id = ''; // this will be redundant on intitial cart creation
+    // }
+    var postUrl;
+    var newCart = false;
+    if (this.getCookie().length > 5) {
+      postUrl = this.jsonStoreUrl + this.getCookie();
+    } else {
+      postUrl = this.jsonStoreUrl;
+      newCart = true;
+    }
+    var dta = JSON.parse(JSON.stringify(this.data));
+    dta = this.triggerHook('pre-save-data-modern', dta);
+
+    jQuery.ajax({
+      url: postUrl,
+      type: 'POST',
+      data: JSON.stringify(dta),
+      contentType: 'application/json; charset=utf-8',
+      dataType: 'json',
+      start_time: new Date().getTime(),
+      success: function(data) {
+        if (newCart) {
+          cart.data.Id = data.id;
+          cart.setCookie(data.id, 1);
+          cart.save(callbacks);
+        } else {
+          cartAjaxSuccess(cart.data, callbacks);
+        }
+      },
+      error: function(jq, textStatus, errorThrown) {
+        cartAjaxError(textStatus, errorThrown, callbacks);
+      }
+    });
+
+    return this;
+  };
+
+  // load cart from id and allow custom callbacks on success and error
+  this.loadLegacy = function(callbacks, cartID){
+    cartID = (typeof cartID !== 'undefined' && cartID !== '') ? cartID : this.getCookie();
+    if (cartID !== '') {
+      jQuery.ajax({
+        url: 'https://xcrm.samaritanspurse.org/service.php/sp/Cart/GetCart.json/' + cartID,
+        type: "GET",
+        dataType: "json",
+        success: function (data) {cartAjaxSuccess(data, callbacks);},
+        error: function (jq, textStatus, errorThrown) {cartAjaxError(textStatus, errorThrown, callbacks);}
+      });
+    } else {
+      // this is a new cart so save it and get started
+      this.save(callbacks);
+    }
+
+    return this;
+  };
+
+  // save cart to server and allow custom callbacks for success and error
+  this.saveLegacy = function(callbacks) {
+    // fixes last item removal bug
+    if(typeof this.data.Items !== 'undefined' && !this.data.Items.length) {
+      this.data.Id = ''; // this will be redundant on intitial cart creation
+    }
+
+    jQuery.ajax({
+      url: 'https://xcrm.samaritanspurse.org/service.php/sp/Cart/SaveCart.json',
+      type: "POST",
+      data: JSON.stringify(this.data),
+      contentType: 'application/json; charset=utf-8',
+      dataType: "json",
+      start_time: new Date().getTime(),
+      success: function (data) {
+        cartAjaxSuccess(data, callbacks);
+      },
+      error: function (jq, textStatus, errorThrown) {cartAjaxError(textStatus, errorThrown, callbacks);}
+    });
+
+    return this;
+  };
+
+  this.copyToNewEnvironment = function(postUrl) {
+    // reset responses
+    // cart.data.Items.forEach(i => {
+    //   i.Responses = [];
+    // });
+
+    for(var i = 0; i < cart.data.Items.length; i++){
+      cart.data.Items[i].Responses = [];
+    }
+
+    jQuery.ajax({
+      url: postUrl,
+      type: 'POST',
+      data: JSON.stringify(cart.data),
+      contentType: 'application/json; charset=utf-8',
+      dataType: 'json',
+      start_time: new Date().getTime(),
+      success: function(resp) {
+        cartAjaxSuccess(cart.data);
+      },
+      error: function(jq, textStatus, errorThrown) {
+        cartAjaxError(textStatus, errorThrown);
+      }
+    });
+  }
+
+  // empty the contents of the cart
+  this.empty = function(fullEmpty) {
+    if (typeof fullEmpty !== 'undefined' && fullEmpty) {
+      // dump the whole thing!
+      this.setCookie('');
+    }
+
+    this.data = {
+      Id: null, // can (and probably will) be empty if you aren't updating an existing cart
+      Referrer: null, // Set this to something useful
+      SourceCode: null, // Set this to something useful
+      EntityAttributes: [],
+      Items: [] // there is a separate item object for each box configuration.
+    };
+
+    return this;
+  };
+
+
+  // processes success for ajax and allows custom callbacks
+  // must use cart instead of this for callbacks
+  var cartAjaxSuccess = function(data, callbacks) {
+    // check for non-ajax errors
+    if (
+        typeof data.ErrorMessages !== 'undefined' &&
+        data.ErrorMessages !== null &&
+        data.ErrorMessages.length > 0
+    ) {
+      cartAjaxError(0, data.ErrorMessages, callbacks);
+      return;
+    }
+
+    // merge (to keep credit card and other protected attributes)
+    cart.update(data);
+
+    // if they submited checkout do something different... else set cart cookie
+    if (
+        typeof cart.data.Confirm !== 'undefined' &&
+        cart.data.Confirm === true
+    ) {
+      // NEED TO WORK ON THIS - should cookie be removed / emptied after successful submit???
+    } else if (
+        typeof cart.data.IsApproved !== 'undefined' &&
+        cart.data.IsApproved === true
+    ) {
+      // NEED TO WORK ON THIS
+    } else {
+      // update cart cookie based on return data
+      cart.setCookie(cart.data.Id, 1);
+    }
+
+    if (
+        typeof callbacks !== 'undefined' &&
+        typeof callbacks.success !== 'undefined'
+    )
+      callbacks.success(data);
+  };
+
+  // processes errors for ajax and allows custom callbacks
+  var cartAjaxError = function(textStatus, errorThrown, callbacks) {
+    cart.emit('cart_error', {'textStatus': textStatus, 'errorThrown': errorThrown});
+    
+    if (
+        typeof callbacks !== 'undefined' &&
+        typeof callbacks.error !== 'undefined'
+    )
+      callbacks.error(textStatus, errorThrown);
+  };
+
+  this.setCookie = function(value, days) {
+    var name = this.cookieName;
+    var date = new Date();
+    if (days) {
+      date.setDate( date.getDate() + days );
+    } else {
+      date.setDate( date.getDate() + 1 );
+    }
+    var cookie = name + '=' + value + '; domain=samaritanspurse.org; path=/; expires=' + date.toUTCString();
+    document.cookie = cookie;
+    }
+
+  this.getCookie = function() {
+    var name = this.cookieName;
+    if (document.cookie.length > 0) {
+      var start = document.cookie.indexOf(name + '=');
+      if (start !== -1) {
+        start = start + name.length + 1;
+        var end = document.cookie.indexOf(';', start);
+        if (end === -1) {
+          end = document.cookie.length;
+        }
+        return unescape(document.cookie.substring(start, end));
+      }
+    }
+    return '';
+  };
+
+  this._listeners = {};
+  this._hooks = {};
+}
+
+//#region <!-- cart events -->
+
+Cart.prototype._allowedEmits = ['item_updated', 'item_added', 'item_removed', 'cart_updated', 'cart_error'
+                                , 'cart_entity_added', 'cart_entity_removed'];
+
+/**
+ * 
+ * @param {string} eventName What you want to listen for 
+ * @param {Function} fn the call back function we want to bind to
+ */
+Cart.prototype.addListener = function (eventName, fn) {
+  if (!this._listeners) {
+    this._listeners = {}
+  }
+  
+  if (!this._listeners.hasOwnProperty(eventName)) {
+    if (this._allowedEmits.indexOf(eventName) < 0) {
+      throw 'EventName [' + eventName + '] not allowed';
+    }
+    this._listeners[eventName] = [];
+  }
+  this._listeners[eventName].push(fn);
+}
+
+/**
+ * Loops over the attached listeners and calls the events (detached from the current thread)
+ * @param {String} eventName the name of the event to emit
+ * @param {*} data 
+ */
+Cart.prototype.emit = function (eventName, data) {
+  if (this._listeners && 
+      this._listeners.hasOwnProperty(eventName) &&
+      Array.isArray(this._listeners[eventName])) {
+        var ev = {
+          cart: this
+          , details: JSON.parse(JSON.stringify(data))
+        }
+        this._listeners[eventName].forEach(function (v) {
+          if (typeof v === 'function') {
+            setTimeout(function () {v(ev);}, 0);
+          }
+        });
+  }
+}
+
+//#endregion
+
+//#region <!-- cart hooks -->
+
+/**
+ * Attach a hook to the process
+ * @param {string} hookName the name of the hook we want to attach too
+ * @param {Function} fn the function we want to hook onto, function should accept a single param, and return that param;
+ */
+Cart.prototype.addHook = function (hookName, fn) {
+  if (!this._hooks) {
+    this._hooks = {};
+  }
+  if (!this._hooks.hasOwnProperty(hookName)) {
+    this._hooks[hookName] = [];
+  }
+  this._hooks[hookName].push(fn);
+}
+
+/**
+ * loops over the hooks, and returns the content of the data. 
+ * @param {String} hookName the name of the hook to call
+ * @param {T} data 
+ * @returns {T}
+ */
+Cart.prototype.triggerHook = function (hookName, data) {
+  if (this._hooks && 
+      this._hooks.hasOwnProperty(hookName) &&
+      Array.isArray(this._hooks[hookName])) {
+        return this._hooks[hookName].reduce(function (p, c) {
+          if (typeof c === 'function') {
+            return c(p);
+          }
+          return p;
+        }, data);
+  }
+  return data;
+}
+
+/**
+ * removes the passed function
+ * @param {string} hookName 
+ * @param {Function} fn 
+ */
+Cart.prototype.removeHook = function (hookName, fn) {
+  if (this._hooks &&
+    this._hooks.hasOwnProperty(hookName) &&
+    Array.isArray(this._hooks[hookName])) {
+    
+    var fnIdx = this._hooks[hookName].indexOf(fn);
+    if (fnIdx > -1) {
+      this._hooks[hookName].splice(fnIdx, 1);
+    }
+  }
+}
+
+
+//#endregion 
+
+//#region <!-- cart prototypes -->
+  
+Cart.prototype.savePromise = function () {
+  var _cart = this;
+  return new Promise(function (resolve, reject) {
+    _cart.save({
+      success: function (data) {
+        resolve(data);
+      },
+      error: function (textStatus, errorThrown) {
+        reject(textStatus, errorThrown);
+      }
+    });
+  });
+}
+  
+/**
+ * Will search through the items, and return the items containing 
+ * @param {string} designation
+ * @returns {[index, CartItem][]} tuple of the index number, and the objects
+ */
+Cart.prototype.findItemsByDesignation = function (designation) {
+  var _cart = this;
+  var rtnArray = [];
+  if (!_cart.data || !_cart.data.Items) {
+    return rtnArray;
+  }
+
+  for (var i = 0, len = _cart.data.Items.length; i < len; i++) {
+    if (designation === _cart.data.Items[i].Designation) {
+      rtnArray.push([i, _cart.data.Items[i]]);
+    }
+  }
+
+  return rtnArray;
+}
+  
+//#endregion
+  
+//#region <!-- working with EntityAttributes -->
+;+function () {
+  
+  /** quick dirty filter for finding entities */
+  function entityFilterByKey(searchKey, current) {
+    return current && current.Key === searchKey;
+  }
+
+
+  /**
+   * will add/update the cart Entry Attribute with
+   * the passed key/value NOTE: using this you can only
+   * have a single key name
+   * @param {string} key name
+   * @param {*} value value
+   */
+  Cart.prototype.setEntityAttribute = function (key, value) {
+    if (!this.data.EntityAttributes || !Array.isArray(this.data.EntityAttributes)) {
+      this.data.EntityAttributes = [];
+    }
+    // does it already have an entity then it's an update
+    if (this.hasEntityAttribute(key)) {
+      var uitm = this.data.EntityAttributes.find(entityFilterByKey.bind(null, key));
+      uitm.Value = value;
+      this.emit('cart_entity_added', uitm);
+      return;
+    } 
+    // so add the item... 
+    var itm = {Key: key, Value: value};
+    this.data.EntityAttributes.push(itm);
+    this.emit('cart_entity_added', itm);
+  }
+  /**
+   * Does the Key exist in the cart entry Attributes
+   * @param {String} key key value to check for 
+   * @returns {bool}
+   */
+  Cart.prototype.hasEntityAttribute = function (key) {
+    if (!this.data.EntityAttributes || !Array.isArray(this.data.EntityAttributes)) {
+      return false;
+    }
+    return this.data.EntityAttributes.findIndex(entityFilterByKey.bind(null, key)) > -1;
+  }
+
+  /**
+   * Removes the entry from the cart entry attributes
+   * @param {String} key key value to check for 
+   * @returns {bool} did the key exist and was it removed. 
+   */
+  Cart.prototype.removeEntityAttribute = function (key) {
+    var safetyCount = 1000;
+    var rtnRemoved = false;
+    while (this.hasEntityAttribute(key) && (safetyCount--) > 0) {
+      var indx = this.data.EntityAttributes.findIndex(entityFilterByKey.bind(null, key));
+      var rmItm = this.data.EntityAttributes.splice(indx, 1);
+      this.emit('cart_entity_removed', rmItm);
+      rtnRemoved = true;
+    }
+    if (safetyCount < 1) console.debug('There was a problem pulling off an Entity')
+    return rtnRemoved;
+  }
+
+  /**
+   * Removes the entry from the cart entry attributes
+   * @param {*} key key value to check for 
+   * @returns {(* | undefined)} key value, or undefined if doesn't exists
+   */
+  Cart.prototype.getEntityAttribute = function (key) {
+    if (!this.hasEntityAttribute(key)) {
+      return undefined;
+    }    
+    return (this.data.EntityAttributes.find(entityFilterByKey.bind(null, key)) || {}).Value;
+  }
+}();
+//#endregion
+
+/***************************************/
+/*  HAL's code starts here:            */
+/***************************************/
+
+// create cookie and get cookie from: http://stackoverflow.com/questions/4825683/how-do-i-create-and-read-a-value-from-cookie
+// with a few changes to naming conventions
+function getCookie(name) {
+  if (document.cookie.length > 0) {
+    var start = document.cookie.indexOf(name + '=');
+    if (start !== -1) {
+      start = start + name.length + 1;
+      var end = document.cookie.indexOf(';', start);
+      if (end === -1) {
+        end = document.cookie.length;
+      }
+      return unescape(document.cookie.substring(start, end));
+    }
+  }
+  return '';
+}
+
+// create cookie and get cookie from: http://stackoverflow.com/questions/4825683/how-do-i-create-and-read-a-value-from-cookie
+// with a few changes to naming conventions
+function setCookie(name, value, days) {
+  var date = new Date();
+  if (days) {
+    date.setDate( date.getDate() + days );
+  } else {
+    date.setDate( date.getDate() + 1 );
+  }
+  var cookie = name + '=' + value + '; domain=samaritanspurse.org; path=/; expires=' + date.toUTCString();
+  document.cookie = cookie;
+}
+
+if (typeof String.prototype.trim !== 'function') {
+  String.prototype.trim = function() {
+    return this.replace(/^\s+|\s+$/g, '');
+  };
+}
+
+function getMotivation() {
+  if (typeof _motivation === 'undefined' || _motivation === '') {
+    var mo = getCookie('_motivation');
+    if (typeof mo !== 'undefined' && mo.length > 0) {
+      _motivation = mo;
+    }
+  }
+  return _motivation;
+}
+function setMotivation(motivation) {
+  _motivation = motivation;
+  setCookie('_motivation', _motivation, motivationExpirationDays);
+}
+
+var _referrer = '';
+function getReferrer() {
+  if (typeof _referrer === 'undefined' || _referrer === '') {
+    var re = getCookie('_referrer');
+    if (typeof re !== 'undefined' && re.length > 0) {
+      _referrer = re;
+    }
+  }
+  return _referrer;
+}
+function setReferrer(referrer) {
+  _referrer = referrer;
+  setCookie('_referrer', _referrer, motivationExpirationDays);
+}
+
+function setMotivationAndReferrer(hash) {
+  var arr = hash
+      .replace('#m_', '')
+      .replace('#s_', '')
+      .replace('m_', '')
+      .replace('s_', '')
+      .split('_');
+  var ref = '';
+  for (var i = 0; i < arr.length; i++) {
+    if (i === 0) {
+      setMotivation(arr[i]);
+    } else {
+      if (ref.length === 0) {
+        ref = arr[i];
+      } else {
+        ref = ref + '_' + arr[i];
+      }
+    }
+  }
+  setReferrer(ref);
+}
+
+function checkMotivation() {
+  if (!checkMotivationParameter()) {
+    checkInitialHash();
+  }
+}
+function checkInitialHash() {
+  if (window.location.hash) {
+    var hash = window.location.hash;
+    if (hash.indexOf('#m_') === 0) {
+      setMotivationAndReferrer(hash);
+      return true;
+    } else if (hash.indexOf('#s_') === 0) {
+      var mo = getMotivation();
+      if (mo === undefined || mo.length === 0) {
+        setMotivationAndReferrer(hash);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function checkMotivationParameter() {
+  var hash = qs(trackingparam);
+  if (typeof hash !== 'undefined' && hash !== null) {
+    if (hash.indexOf('#m_') === 0 || hash.indexOf('m_') === 0) {
+      setMotivationAndReferrer(hash);
+      return true;
+    } else if (hash.indexOf('#s_') === 0 || hash.indexOf('s_') === 0) {
+      var mo = getMotivation();
+      if (typeof mo === 'undefined' || mo.length === 0) {
+        setMotivationAndReferrer(hash);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function qs(key) {
+  key = key.replace(/[*+?^$.\[\]{}()|\\\/]/g, '\\$&'); // escape RegEx meta chars
+  var match = location.search.match(new RegExp('[?&]' + key + '=([^&]+)(&|$)'));
+  return match && decodeURIComponent(match[1].replace(/\+/g, ' '));
+}
+
+// make sure you are using the appropriate segment
+// /service.php/{segment}/cart/"
+var cookieExpirationDays = 30;
+var cookieUnSetExpirationDays = -30
+var motivationExpirationDays = 365;
+var _motivation = '';
+var trackingparam = 'utm_campaign';
+checkMotivation();
+
+trackingparam = 'sp_motive';
+checkMotivation();
+
+function setMegaMenuDonateFromCookies() {
+  //Set the check-out button in mega-menu if cookies show items in cart
+  //jQuery('<span class="cart-count"></span>').appendTo('#megaUber .megamenu-donate');
+  if (
+      cartId.length > 0 &&
+      cartCookieCount.length > 0 &&
+      cartCookieCount !== '0'
+  ) {
+    jQuery('.show-with-items').removeClass('hidden');
+    jQuery('div#site-wrapper').removeClass('cart-no');
+    jQuery('div#site-wrapper').addClass('cart-active');
+    jQuery('span.cart-count').text(cartCookieCount);
+    jQuery('span.cart-display').text(cartDisp);
+    jQuery('span.cart-total-amount').text(cartTotalAmt);
+    jQuery('div#gblCart').css('display', 'block');
+  } else {
+    jQuery('div#site-wrapper').removeClass('cart-active');
+    jQuery('div#site-wrapper').addClass('cart-no');
+    setCookie('_cart-count', '', cookieUnSetExpirationDays);
+    setCookie('_cart-display', '', cookieUnSetExpirationDays);
+    setCookie('_cart-total-amount', '', cookieUnSetExpirationDays);
+  }
+}
+
+function updateCartAmt() {
+  //This function only serves to present a total amount on pages that display the total cart amount
+  var cartAmt = 0;
+  if (cart.data) {
+    jQuery.each(cart.data.Items, function() {
+      cartAmt += parseFloat(this.Amount);
+    });
+    cart.Display =
+        'Item(s): ' +
+        cart.data.Items.length +
+        ' Total: $' +
+        parseFloat(cartAmt).toFixed(2);
+    cart.DisplayAmt = parseFloat(cartAmt).toFixed(2);
+  }
+}
+
+function updateCookiesFromCart() {
+  //update cookies once cart is loaded
+  //check to see if motivation/source code has been updated.  Cookie value trumps cart value.
+  if (
+      cart.data.Referrer !== cartRef ||
+      cart.data.SourceCode !== cartSrc
+  ) {
+    cart.data.Referrer = cartRef;
+    cart.data.SourceCode = cartSrc;
+  }
+
+  updateCartAmt();
+  if (cart.data.Items.length > 0) {
+    setCookie('_cartid', cart.data.Id, cookieExpirationDays);
+    setCookie('_cart-count', cart.data.Items.length, cookieExpirationDays);
+    setCookie('_cart-display', cart.Display, cookieExpirationDays);
+    setCookie('_cart-total-amount', cart.DisplayAmt, cookieExpirationDays);
+    jQuery('.show-with-items').removeClass('hidden');
+  } else {
+    setCookie('_cart-count', '', cookieUnSetExpirationDays);
+    setCookie('_cart-display', '', cookieUnSetExpirationDays);
+    setCookie('_cart-total-amount', '', cookieUnSetExpirationDays);
+    jQuery('.show-with-items').addClass('hidden');
+  }
+  setCookie('_cart-referer',window.location.href, cookieExpirationDays);
+  jQuery('span.cart-count').text(cart.data.Items.length);
+  jQuery('span.cart-display').text(cart.Display);
+  jQuery('span.cart-total-amount').text(cart.DisplayAmt);
+}
+
+function getDonationInfo($this) {
+  var item = {};
+  item.desig = jQuery($this).data('sku');
+  item.qty = jQuery('#qty_' + item.desig).val(); //get user selected quantity
+
+  if (!item.qty) {
+    item.qty = jQuery('input#qty_' + item.desig).val();
+  } // try for an input just in case
+  if (!item.qty) {
+    item.qty = 1;
+  } //regular donation items have no quantity
+
+  item.amt = $this.val();
+  if (!item.amt) {
+    item.amt = '0.00';
+  }
+  item.amt = item.amt.replace('$', '');
+  var dataAttr = $this.data(); //get donation item details from parent div
+  item.desc = dataAttr.itemDescription;
+  item.recurring = dataAttr.recurring;
+  item.gaCat = dataAttr.itemGaCat; //Google Analytics Category
+  if (!item.recurring) {
+    item.recurring = false;
+  }
+  if (item.recurring && item.desc.indexOf(' (Monthly)') === -1) {
+    item.desc = item.desc + ' (Monthly)';
+  }
+  item.maxQty = dataAttr.maxQty;
+  item.itemValue = dataAttr.itemValue;
+  item.honorMem = dataAttr.allowResponse;
+  item.responseLimit = dataAttr.responseLimit;
+  item.isOrder = dataAttr.isOrder;
+  item.authOnly = dataAttr.authorizeOnly;
+  /* 6/18/14-Walt - adding extra entity attribute */
+  if (dataAttr.entityAttributes) {
+    var arrExtraEntAttr = dataAttr.entityAttributes.split(':');
+  }
+  if (arrExtraEntAttr) {
+    item.extraKey = arrExtraEntAttr[0];
+    item.extraVal = arrExtraEntAttr[1];
+  }
+
+  return item;
+}
+var cartRef, cartSrc;
+
+//check to see if custom footer entity attribute already exists
+var customGCFooter = false;
+function checkGCFooter(item, index) {
+  if (
+      item.Value === '/our-ministry/checkout-confirmation-gift-catalog-social/'
+  ) {
+    customGCFooter = true;
+  }
+}
+
+function addGCFooter() {
+  if (
+      cart.data.EntityAttributes !== null ||
+      cart.data.EntityAttributes === undefined
+  ) {
+    //cart.data.EntityAttributes.forEach(checkGCFooter);
+    for(var i = 0; i < cart.data.EntityAttributes.length; i++){
+      checkGCFooter(cart.data.EntityAttributes[i],i);
+    }
+  }
+  if (!customGCFooter) {
+    if (
+        cart.data.EntityAttributes === null ||
+        cart.data.EntityAttributes === undefined
+    ) {
+      cart.data.EntityAttributes = [
+        {
+          Key: 'custom_footer_include',
+          Value: '/our-ministry/checkout-confirmation-gift-catalog-social/'
+        }
+      ];
+    } else {
+      cart.data.EntityAttributes.push({
+        Key: 'custom_footer_include',
+        Value: '/our-ministry/checkout-confirmation-gift-catalog-social/'
+      });
+    }
+  }
+}
+
+var giftCatalog = false;
+function checkGiftCatalog() {
+  if (jQuery('html').hasClass('gc2017')) {
+    //if GC item is detected, check motv & referrer
+    giftCatalog = true;
+    if (typeof cart.data.Referrer === 'undefined')
+      cart.data.Referrer = 'gcDefaultReferrer';
+    if (typeof cart.data.SourceCode === 'undefined')
+      cart.data.SourceCode = 'YS4G-C22W';
+    if (cart.data.Referrer === '')
+      cart.data.Referrer = 'gcDefaultReferrer';
+    if (cart.data.SourceCode === '')
+      cart.data.SourceCode = 'YS4G-C22W';
+
+    cartRef = cart.data.Referrer;
+    cartSrc = cart.data.SourceCode;
+
+    setCookie('_motivation', cart.data.SourceCode, motivationExpirationDays);
+    setCookie('_referrer', cart.data.Referrer, motivationExpirationDays);
+  }
+}
+
+function createItemAnalytics() {
+  var analyticArr = [];
+  analyticArr.push({"Key": "Browser-Time", "Value": new Date().toISOString().slice(0, 19).replace('T', ' ')});
+  analyticArr.push({"Key": "Browser-Referrer", "Value": document.referrer});
+  analyticArr.push({"Key": "Browser-Location", "Value": window.location.href});
+  return analyticArr;
+}
+
+function addItemToCart($this) {
+
+  if (!browserCheck()) {
+    return false;
+  }
+
+  //Add item to cart
+  var itemInfo = getDonationInfo($this),
+      ret,
+      item;
+  var entArr = [];
+  if (typeof maxQty !== 'undefined') {
+    entArr.push({ Key: 'MaxQuantity', Value: maxQty });
+  }
+  if (typeof size !== 'undefined') {
+    entArr.push({ Key: 'Size', Value: size });
+  }
+  if (typeof respLimit !== 'undefined') {
+    entArr.push({ Key: 'ResponseLimit', Value: respLimit });
+  }
+  if (giftCatalog) {
+    entArr.push({ Key: 'category', Value: 'Holiday Gift Catalog' });
+    entArr.push({ Key: 'ecard_template', Value: 'Gift Catalog eCard' });
+  }
+
+  //Add referrer and location for item analytics
+  var analyticArr = createItemAnalytics();
+  Array.prototype.push.apply(entArr, analyticArr);
+
+  //Add values to dataLayer for GA eCommerce.  Note - BASBO uses buildonline.prod.js for this functionality
+  var dataLayer = (window.dataLayer = window.dataLayer || []);
+  var gaCategory = itemInfo.gaCat;
+  if (typeof gaCategory === 'undefined') {
+    gaCategory = '';
+  }
+  dataLayer.push({
+    event: 'ecomAdd',
+    ecommerce: {
+      add: {
+        products: [
+          {
+            name: itemInfo.desc,
+            id: String(itemInfo.desig),
+            price: String(Number(itemInfo.amt.replace(/[^0-9\.-]+/g, ''))),
+            category: String(gaCategory),
+            quantity: parseInt(itemInfo.qty),
+            metric1: String(itemInfo.itemValue)
+          }
+        ]
+      }
+    }
+  });
+
+  // setup the item object
+  item = {
+    Description: itemInfo.desc,
+    Designation: itemInfo.desig,
+    Quantity: itemInfo.qty,
+    Amount: itemInfo.amt,
+    ItemValue: itemInfo.itemValue,
+    ResponseAllowed: itemInfo.honorMem,
+    AuthorizeOnly: itemInfo.authOnly,
+    Recurring: itemInfo.recurring,
+    IsOrder: itemInfo.isOrder,
+    EntityAttributes: entArr
+  };
+
+  if (itemInfo.gaCat) {
+    item.EntityAttributes.push({ Key: 'category', Value: itemInfo.gaCat });
+  }
+
+  if (itemInfo.extraKey && itemInfo.extraVal) {
+    item.EntityAttributes.push({
+      Key: itemInfo.extraKey,
+      Value: itemInfo.extraVal
+    });
+  }
+  if (itemInfo.desig == '013995-1') {
+    item.SuppressRecurring = true;
+    item.ResponseAllowed = false;
+  }
+  checkGiftCatalog();
+
+  if (jQuery('html').hasClass('gc2017')) {
+    addGCFooter();
+  }
+
+  // trigger any bound functions before adding item to the cart
+  item = (ret = jQuery(window).triggerHandler('onCartAddItem', [item]))
+      ? ret
+      : item;
+  cart.addItem(item);
+}
+
+function addUpdateItem($this, directCheckout) {
+  if (!browserCheck()) {
+    return false;
+  }
+
+  var desig = $this.data('sku');
+  checkGiftCatalog();
+  var qty = $this
+      .parent()
+      .find('select.donationitem-quantity[data-sku="' + desig + '"]')
+      .val(); //get user selected quantity
+  if (!qty) qty = 1; //regular donation items have no quantity
+  var $amtField = $this.parent().find('input[data-sku="' + desig + '"]');
+  var amt = $amtField.val(); //get user entered amount
+  if (!amt) {
+    amt = '0.00';
+  }
+  amt = amt.replace('$', '');
+  amt = amt.replace(',', '');
+  amt = amt.replace(' ', '');
+  if (!amt) amt = 0; //books have no amount
+  if (isNaN(amt)) {
+    if (getCookie('spt_language') === 'es_ES') {
+      alert(
+        'Debes ingresar una cantidad válida antes de darle un click al botón. Si aún tienes dificultades y prefieres donar por teléfono, por favor llama al 1-833-610-4243.'
+      );
+    } else {
+      alert(
+          'You must enter a valid amount before clicking this button.  If you are still having trouble and would like to donate by phone, please call 1-800-528-1980.'
+      );
+    }
+    jQuery('body').css('cursor', 'default');
+    return false;
+  }
+
+  var dataAttr = $amtField.data();
+  var desc = dataAttr.itemDescription;
+
+  if (dataAttr.recurring && desc.indexOf(' (Monthly)') === -1) {
+    desc = desc + ' (Monthly)';
+  }
+
+  var maxQty = dataAttr.maxQty;
+  if (dataAttr.itemValue2) {
+    //some merch item sizes have different values...process them
+    var arrExtraAmounts = dataAttr.itemValue2.split(';');
+    var arrExtras = [];
+    for (i = 0; i < arrExtraAmounts.length; i++) {
+      arrExtras[i] = arrExtraAmounts[i].split(':');
+    }
+  }
+  var itemValue = dataAttr.itemValue;
+  var honorMem = dataAttr.allowResponse;
+  var isOrder = dataAttr.isOrder;
+  var authOnly = dataAttr.authorizeOnly;
+  var items = cart.data.Items;
+  var recurring = dataAttr.recurring;
+  var gaCategory = dataAttr.itemGaCat;
+  if (!recurring) {
+    recurring = false;
+  }
+  var respLimit = dataAttr.responseLimit;
+  /* 6/18/14-Walt - adding extra entity attribute */
+  if (dataAttr.entityAttributes)
+    var arrExtraEntAttr = dataAttr.entityAttributes.split(':');
+  if (arrExtraEntAttr) {
+    var extraKey = arrExtraEntAttr[0];
+    var extraVal = arrExtraEntAttr[1];
+  }
+
+  if ((isOrder && qty > 0) || (!isOrder && amt > 0)) {
+    //don't update cart if qty is zero
+    var size = $this
+        .parent()
+        .find('select.donationitem-size[data-sku="' + desig + '"]')
+        .val();
+    if (size) {
+      desig = desig + size;
+      desc = desc + ' (' + size + ')';
+      if (arrExtras) {
+        for (i = 0; i < arrExtras.length; i++) {
+          if (size === arrExtras[i][0]) {
+            itemValue = arrExtras[i][1];
+          }
+        }
+      }
+    }
+
+    var ret, item;
+
+    //only add entity attributes that are needed
+    var entArr = [];
+    if (typeof maxQty !== 'undefined') {
+      entArr.push({ Key: 'MaxQuantity', Value: maxQty });
+    }
+    if (typeof size !== 'undefined') {
+      entArr.push({ Key: 'Size', Value: size });
+    }
+    if (typeof respLimit !== 'undefined') {
+      entArr.push({ Key: 'ResponseLimit', Value: respLimit });
+    }
+    if (giftCatalog) {
+      entArr.push({ Key: 'category', Value: 'Holiday Gift Catalog' });
+      entArr.push({ Key: 'ecard_template', Value: 'Gift Catalog eCard' });
+    }
+
+    //Add referrer and location for item analytics
+    var analyticArr = createItemAnalytics();
+    Array.prototype.push.apply(entArr, analyticArr);
+
+    //Add values to dataLayer for GA eCommerce.  Note - BASBO uses buildonline.prod.js for this functionality
+    var dataLayer = (window.dataLayer = window.dataLayer || []);
+    if (typeof gaCategory === 'undefined') {
+      gaCategory = '';
+    }
+    dataLayer.push({
+      event: 'ecomAdd',
+      ecommerce: {
+        add: {
+          products: [
+            {
+              name: desc,
+              id: String(desig),
+              price: String(Number(amt.replace(/[^0-9\.-]+/g, ''))),
+              category: String(gaCategory),
+              quantity: parseInt(qty),
+              metric1: String(itemValue)
+            }
+          ]
+        }
+      }
+    });
+
+    // setup the item object
+    item = {
+      Description: desc,
+      Designation: desig,
+      Quantity: qty,
+      Amount: amt,
+      ItemValue: itemValue,
+      ResponseAllowed: honorMem,
+      AuthorizeOnly: authOnly,
+      Recurring: recurring,
+      IsOrder: isOrder,
+      EntityAttributes: entArr
+    };
+
+    if (gaCategory) {
+      item.EntityAttributes.push({ Key: 'category', Value: gaCategory });
+    }
+    if (extraKey && extraVal) {
+      item.EntityAttributes.push({ Key: extraKey, Value: extraVal });
+    }
+    if (desig == '013995-1') {
+      item.SuppressRecurring = true;
+      item.ResponseAllowed = false;
+    }
+
+    if (jQuery('html').hasClass('gc2017')) {
+      addGCFooter();
+    }
+
+    // trigger any bound functions before adding item to the cart
+    item = (ret = jQuery(window).triggerHandler('onCartAddItem', [item]))
+        ? ret
+        : item;
+
+    cart.addItem(item);
+    var updateSuccess = true;
+    //exclude animation for GC 2017
+    if (!jQuery('html').hasClass('gc2017')) {
+      $this.animate({ height: 0 }, 200, function() {
+        $this.text('Added').animate({ height: 30 }, 200, function() {
+          $this.delay(500).animate({ height: 0 }, 200, function() {
+            $amtField.val('');
+            $this.text('Add').animate({ height: 30 }, 200);
+          });
+        });
+      });
+    }
+    cart.save({
+      success: function(data) {
+        updateCookiesFromCart();
+        if (directCheckout) {
+          window.location = cart.checkoutUrl + cart.getCookie();
+        }
+      },
+      error: function() {
+        updateSuccess = false;
+        console.log('error adding item');
+      }
+    });
+  }
+  jQuery('body').css('cursor', 'default');
+  return updateSuccess;
+}
+
+//Globals
+//set cart vars if cookies exist
+var cartId = getCookie('_cartid'),
+    cartCookieCount = getCookie('_cart-count'),
+    cartDisp = getCookie('_cart-display');
+var cartTotalAmt = getCookie('_cart-total-amount'),
+    cartSrc = getCookie('_motivation'),
+    cartRef = getCookie('_referrer');
+
+//set mega-menu checkout button based on cookies
+setMegaMenuDonateFromCookies();
+
+if (!cart) {
+  //if cart does not exist, create it
+  var cart = new Cart({ Referrer: cartRef, SourceCode: cartSrc }, '');
+}
+if (cartId && cart.loadCart) {
+  // if _cartId cookie exists, load the cart
+  cart.load({
+    success: function() {
+      updateCookiesFromCart();
+    },
+    error: function() {
+      console.log('Problem occurred with cart load');
+    }
+  });
+}
+
+; +function ($, __sp_cart_utils) {
+  // use strict;
+
+
+  /**
+   * Checks for anything that might need a 'popup' in the cart
+   * and processes them
+   * @param {Cart} _cart 
+   * @return {bool} ok to proceed...
+   */
+  function processPopupChecks(_cart) {
+    var showTgjPopup = false;
+    var hasTgjAlready = false;
+    var showBclPopup = false;
+    var hasBclAlready = false;
+    //loop through cart items and pop up $6 TGJ ask if there's an OCC item in the cart
+    for(var i = 0; i < _cart.data.Items.length; i++){
+      // check certain items required for popup are in cart
+      if((_cart.data.Items[i].Designation.includes('14043') || _cart.data.Items[i].Designation.includes('14052') || _cart.data.Items[i].Designation.includes('13995-1') || _cart.data.Items[i].Designation.includes('13477')) && !window.location.href.includes('operation-christmas-child/buildonline'))  {
+        showTgjPopup = true;
+      }
+      // check if we already have the TGJ in the cart
+      if( _cart.data.Items[i].Designation.includes('13943') ){
+        hasTgjAlready = true;
+      }
+      // check if we already have the BCL in the cart
+      if (_cart.data.Items[i].Designation.includes('12025') ) {
+        hasBclAlready = true;
+      }
+    }
+    // check if we should display the BCL popup instead
+    if(window.location.href.includes('gift-catalog')) {
+      showTgjPopup = false;
+      showBclPopup = true;
+    }
+
+    if (showTgjPopup && !hasTgjAlready && $('#pum-107118').length > 0) {
+      PUM.open(107118);
+      return false;
+    } else if (showBclPopup && !hasBclAlready && $('#pum-189324').length > 0) {
+      PUM.open(189324);
+      return false;
+    }
+
+    // allow for external popup validations
+    if (_cart.triggerHook('process_checkout_popup_validation', false)) {
+      return false;
+    }
+
+
+    return true;
+  }
+
+  /**
+   * Process a cart submission, with page redirect if possible. 
+   * @this *
+   * @param {Cart} _cart - the cart object we are processing
+   * @param {Event} ev - the event we are attaching too
+   * @param {bool} [allowRedirection=false] - can the function trigger a page redirection to the checkout - default false.
+   */
+  function processCartSubmission(_cart, ev, allowRedirection) {
+    var pendingAddItem = false;
+
+    //Add button clicked
+    jQuery('body').css('cursor', 'progress');
+    pendingAddItem = _cart.triggerHook('process_checkout_additional_item', pendingAddItem);
+    
+    if (pendingAddItem || allowRedirection) {
+      _cart.triggerHook('after_cart_validation');
+      ev.preventDefault();
+
+      /* 
+        wait for a promise to resolve
+        by attaching promise.resolve first, we can get it into a 
+        promise object, and any content returned by a "then" either
+        gets attached as the result into the next then, or 
+        becomes the promise the next then waits for...
+      */
+      Promise.resolve().then(function () {
+        return _cart.triggerHook('before_cart_redirection', null);
+      }).then(function (d) {
+        // redirect to the checkout page. 
+        window.location = _cart.checkoutUrl + _cart.getCookie();  
+      });
+    } else addUpdateItem($(this));
+  }
+
+  __sp_cart_utils['processCartSubmission'] = processCartSubmission;
+  __sp_cart_utils['processPopupChecks'] = processPopupChecks;
+
+  
+}(jQuery, (window['__sp_cart_utils'] = (window['__sp_cart_utils'] || {}) ));
+
+
+
+jQuery(function($) {
+  jQuery('#chkNow, button.donationitem-add, div.donationitem-add, .fybap-checkout-button, [data-progress="submit"]').on(
+      'click',
+    function (event) {
+      var $$ = jQuery(this);
+
+      // process the popups first
+      if($$.attr('id') === 'chkNow' || $$.is('[data-progress="submit"]') || $$.hasClass('fybap-checkout-button')) {
+        if (!__sp_cart_utils.processPopupChecks(cart)) {
+          return false;
+        }
+      }  
+      // check for 'redirect' options
+      var allowRedirection = false;
+      if ($$.is('[data-progress="submit"]') || $$.parents('#gblCartWrap').length || $$.parents('#gcCartWrap').length || $$.parents('#checkout-form-id').length || $$.hasClass('fybap-checkout-button')) {
+        allowRedirection = true;
+      }
+      // process the cart submission...;
+      __sp_cart_utils.processCartSubmission.call(this, cart, event, allowRedirection);
+    }
+  );
+
+  jQuery('.megamenu-donate-button').on('click', function(event) {
+    //Add button clicked
+    jQuery('body').css('cursor', 'progress');
+    event.preventDefault();
+    window.location = cart.checkoutUrl + cart.getCookie();
+  });
+
+  jQuery('div.megamenu-donate-button').on('click', function() {
+    //hijack the Checkout button and make sure there's an item in the cart
+    if (cart.data.Items.length < 1) {
+      if (getCookie('spt_language') === 'es_ES') {
+        alert(
+          'Debes ingresar una cantidad válida antes de darle un click al botón. Si aún tienes dificultades y prefieres donar por teléfono, por favor llama al 1-833-610-4243.'
+        );
+      } else {
+        alert(
+            'You must enter a valid amount before clicking this button.  If you are still having trouble and would like to donate by phone, please call 1-800-528-1980.'
+        );
+      }
+      return false;
+    }
+  });
+
+  jQuery('.donationitem-quantity, .donationitem-size').change(function() {
+    //fired when donation item Qty or Size is changed
+    var sku = $(this).data('sku');
+    if (isNaN($(this).val())) {
+      //check to see if size field changed.  If so, get qty from qty field
+      var qty = jQuery(this)
+          .parent()
+          .find('select.donationitem-quantity')
+          .val();
+      var size = $(this).val();
+    } else {
+      var qty = $(this).val();
+      var size = jQuery(this)
+          .parent()
+          .find('select.donationitem-size')
+          .val();
+    }
+    //2/18/2015 - Walt - adding functionality to handle multiple merch items with different price
+    var amt2 = jQuery(this)
+        .parent()
+        .find('input[data-sku="' + sku + '"]')
+        .data('item-value2');
+    if (amt2) {
+      //if amt2 is valid, check to see if that size was selected
+      vals = amt2.split(';');
+      for (i1 = 0; i1 < vals.length; i1++) {
+        var vals2 = vals[i1].split(':');
+        if (vals2[0] === size) {
+          var amt = parseInt(vals2[1]);
+        }
+      }
+    }
+    if (!amt)
+      var amt = parseInt(
+          jQuery(this)
+              .parent()
+              .find('input[data-sku="' + sku + '"]')
+              .data('item-value')
+      );
+    jQuery('span#diMerchSgg_' + sku).html(
+        '<strong>$' + qty * amt + '</strong>'
+    );
+    if (qty === 0) jQuery('div#suggMerchAmt_' + sku).css('display', 'none');
+    else jQuery('div#suggMerchAmt_' + sku).css('display', 'inline-block');
+  });
+
+  jQuery('.directCheckout').on('click', function() {
+
+    if (!browserCheck()) {
+      return false;
+    }
+
+    jQuery('body').css('cursor', 'progress');
+    var slimPC = jQuery(this).data('sku');
+    var temp = jQuery(this)
+        .parent()
+        .find('input[data-sku="' + slimPC + '"]');
+    if (temp.length === 0) return false;
+    var amt = temp[0].value;
+    if (amt) {
+      amt = amt.replace('$', '');
+      amt = amt.replace(' ', '');
+      amt = amt.replace(',', '');
+    }
+    if (!amt || !Number(amt) || Number(amt) < 1) {
+      if (getCookie('spt_language') === 'es_ES') {
+        alert(
+          'Debes ingresar una cantidad válida antes de darle un click al botón. Si aún tienes dificultades y prefieres donar por teléfono, por favor llama al 1-833-610-4243.'
+        );
+      } else {
+        alert(
+            'You must enter a valid amount before clicking this button.  If you are still having trouble and would like to donate by phone, please call 1-800-528-1980.'
+        );
+      }
+      jQuery('body').css('cursor', 'default');
+      return false;
+    }
+    addItemToCart(temp);
+    cart.save({
+      success: function(data) {
+        updateCookiesFromCart();
+        window.location = cart.checkoutUrl + cart.getCookie();
+      },
+      error: function() {
+        console.log('error adding item to cart');
+      }
+    });
+    jQuery('body').css('cursor', 'default'); //change cursor back to normal in case of error
+  }); //end button click
+
+  //if merchandise items are present, check to see if any are out of stock
+  var merchItems = jQuery('*[data-is-order="true"]');
+  if (merchItems.length > 0) {
+    //only run this if merch items are on the page
+
+    jQuery.ajaxSetup({ cache: false });
+    //retrieve backordered list
+    jQuery.getJSON(
+        'https://sp-svc-inventory-control.s3.theark.cloud/inventory-control.json',
+        function(data) {
+          jQuery.each(data.items, function(key, obj) {
+            //loop through returned out of stock items
+            var outSKU = obj.Sku.replace(/\D+/, '');
+            var outSize = obj.Sku.replace(/\d+/, '');
+            jQuery.each(merchItems, function(key, value) {
+              //loop through items on the page looking for matches
+              var sku = jQuery(value).data('sku');
+              if (sku === outSKU) {
+                //merch item on the page matches an out of stock item
+                if (outSize) {
+                  //merch item has sizes
+                  var sizeSelect = jQuery(value)
+                      .parent()
+                      .find(
+                          "select.donationitem-size[data-sku='" + sku + "'] > option"
+                      );
+                  jQuery(sizeSelect).each(function() {
+                    if (jQuery(this).val() === outSize) {
+                      jQuery(this).attr('disabled', 'disabled');
+                      jQuery(this).text(jQuery(this).text() + ' *Out of stock');
+                    }
+                  });
+                  if (
+                      jQuery(this)
+                          .parent()
+                          .find('select.donationitem-size option:enabled').length == 0
+                  ) {
+                    jQuery(this)
+                        .parent()
+                        .html(
+                            "<div class='merchOOS'>Temporarily out of stock.<br>Please check back later.</div>"
+                        );
+                  } else {
+                    jQuery(this)
+                        .parent()
+                        .find('select.donationitem-size option:enabled:first')
+                        .prop('selected', true);
+                  }
+                } else {
+                  //merch item does not have sizes
+                  jQuery(value)
+                      .parent()
+                      .html(
+                          "<div class='merchOOS'>Temporarily out of stock.<br>Please check back later.</div>"
+                      );
+                }
+              }
+            });
+          });
+        }
+    );
+  }
+
+  jQuery(function() {
+    //set cursor 'wait' state when ajax is called
+    jQuery('html')
+        .bind('ajaxStart', function() {
+          jQuery('html').addClass('busy');
+        })
+        .bind('ajaxStop', function() {
+          jQuery('html').removeClass('busy');
+        });
+  });
+});
